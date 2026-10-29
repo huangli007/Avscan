@@ -4,6 +4,10 @@
 
 零第三方依赖，纯 Python 标准库，Windows 下即装即用。
 
+> **下载可执行版**：[Releases](https://github.com/huangli007/funScan/releases) — `funScan-v1.0.0-win64.zip`，解压即用，无需装 Python。
+>
+> 项目程序名 `avscan`，GitHub 仓库名 `funScan`，两者指同一个东西。
+>
 > **文档导航**：[FEATURES.md](FEATURES.md) 功能清单 · [ARCHITECTURE.md](ARCHITECTURE.md) 架构设计
 
 ---

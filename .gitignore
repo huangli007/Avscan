@@ -22,6 +22,9 @@ dist*/
 # 可移植分发包（1.1GB，由 release 脚本组装，不入库）
 release/
 
+# 打包上传用的压缩包（发布到 GitHub Release，不入库）
+release-archives/
+
 # Python
 __pycache__/
 *.py[cod]

@@ -1,0 +1,30 @@
+# 安装包归档：体积大（559MB）且涉及厂商再分发许可，不入库
+packages/*/
+# 但清单必须入库，它是仓库的描述文件
+!packages/manifest.json
+
+# 便携扫描器：总体积 1.5GB，部分单文件超过 GitHub 100MB 限制
+tools/
+
+# 运行产物
+runs/
+.workbuddy/
+
+# 本地配置（含本机引擎路径覆盖）
+config/
+
+# PyInstaller 产物（spec 文件保留，保证构建可复现）
+build/
+build*/
+dist/
+dist*/
+
+# 可移植分发包（1.1GB，由 release 脚本组装，不入库）
+release/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/

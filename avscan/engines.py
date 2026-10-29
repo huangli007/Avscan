@@ -163,7 +163,14 @@ def _parse_defender(stdout: str, stderr: str, rc: int | None, outdir: Path):
     if rc == 0:
         return CLEAN, [], "退出码 0（未检出）"
     if rc == 2:
-        return INFECTED, detections, "退出码 2：检出或扫描出错，详见原始输出"
+        # 退出码 2 有两种含义：检出未处理，或扫描出错。
+        # 只有解析到具体威胁才能判检出，否则按「未完成」处理 ——
+        # 把扫描失败报成「发现病毒」是最不能接受的假阳性。
+        if detections:
+            return INFECTED, detections, f"检出 {len(detections)} 项"
+        if re.search(r"\[Failed\]|CmdTool:\s*Failed|0x[0-9A-Fa-f]{8}", text):
+            return ERROR, [], "扫描出错（退出码 2），详见原始输出"
+        return ERROR, [], "退出码 2 但未解析到威胁，按未完成处理"
     return ERROR, [], f"退出码 {rc}，无法判定"
 
 
@@ -334,8 +341,9 @@ ENGINES: tuple[Engine, ...] = (
             "Huorong/Sysdiag/HipsMain.exe",
         ),
         reg_keywords=("火绒", "huorong"),
-        caveats=("无官方命令行扫描接口，需在主界面「病毒查杀 → 自定义查杀」中指定目录。",),
-        gui_hint="病毒查杀 → 自定义查杀 → 添加要扫描的文件/目录 → 开始扫描",
+        caveats=("无官方命令行扫描接口。首选右键目标「使用火绒安全进行杀毒」；"
+                 "也可在主界面「病毒查杀 → 自定义查杀」中指定目录。",),
+        gui_hint="右键目标 → 火绒安全软件 → 使用火绒安全进行杀毒",
     ),
     Engine(
         key="360",

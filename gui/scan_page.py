@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import subprocess
@@ -365,7 +366,7 @@ class ScanPage(QWidget):
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         # 操作列放的是 widget，ResizeToContents 不会计算 widget 宽度，必须显式给宽
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self.result_table.setColumnWidth(5, 132)
+        self.result_table.setColumnWidth(5, 158)
         v.addWidget(self.result_table)
 
         self.result_box.setVisible(False)
@@ -708,19 +709,28 @@ class ScanPage(QWidget):
             self.result_table.setItem(i, 3, QTableWidgetItem(f"{float(r.get('duration_sec') or 0):.1f}s"))
             self.result_table.setItem(i, 4, QTableWidgetItem(message))
 
-            # 仅 GUI 的引擎只能人工扫：能触发就触发，扫完回填结论
+            # 仅 GUI 的引擎：优先引导用引擎自己的右键扫描（走 explorer 上下文，
+            # 不受自我保护与提权限制），自动触发只作备选。
             if r.get("status") == "manual":
                 box = QWidget()
                 bh = QHBoxLayout(box)
                 bh.setContentsMargins(0, 0, 0, 0)
                 bh.setSpacing(4)
 
+                btn_locate = QPushButton("定位")
+                btn_locate.setObjectName("Ghost")
+                btn_locate.setFixedHeight(20)
+                btn_locate.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn_locate.setToolTip("打开目标位置，用引擎自己的右键扫描（推荐）")
+                btn_locate.clicked.connect(lambda _=False: self._locate_target())
+                bh.addWidget(btn_locate)
+
                 if r["engine"] == "huorong":
                     btn_trig = QPushButton("触发")
                     btn_trig.setObjectName("Ghost")
                     btn_trig.setFixedHeight(20)
                     btn_trig.setCursor(Qt.CursorShape.PointingHandCursor)
-                    btn_trig.setToolTip("按火绒右键菜单的协议直接发起扫描（需管理员权限）")
+                    btn_trig.setToolTip("备选：按火绒协议自动发起扫描（需管理员权限）")
                     btn_trig.clicked.connect(lambda _=False: self._trigger_manual())
                     bh.addWidget(btn_trig)
 
@@ -736,6 +746,46 @@ class ScanPage(QWidget):
                 self.result_table.setCellWidget(i, 5, box)
 
     # ---- 人工回填 ----
+    def _locate_target(self) -> None:
+        """打开目标位置，让用户用引擎自己的右键扫描——比程序硬拉进程可靠。"""
+        if self._outcome is None:
+            return
+        targets = [
+            str(t.get("path", ""))
+            for t in self._outcome.meta.get("targets", [])
+            if t.get("path")
+        ]
+        if not targets:
+            QMessageBox.information(self, "无目标", "当前运行没有可定位的目标路径。")
+            return
+
+        target = Path(targets[0])
+        try:
+            if target.is_dir():
+                os.startfile(str(target))  # noqa: S606
+            else:
+                # 尽量在资源管理器里选中该文件，失败就退回打开父目录
+                shell32 = ctypes.windll.shell32
+                code = shell32.ShellExecuteW(
+                    None, "open", "explorer.exe", f'/select,"{target}"', None, 1
+                )
+                if int(code) <= 32:
+                    os.startfile(str(target.parent))  # noqa: S606
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "无法打开位置", str(exc))
+            return
+
+        QMessageBox.information(
+            self,
+            "用引擎自己的右键扫描",
+            "已打开目标位置。\n\n"
+            "在文件（或文件夹）上右键，选择引擎的扫描项：\n"
+            "  · 火绒安全软件 → 使用火绒安全进行杀毒\n"
+            "  · 使用 Microsoft Defender 扫描...\n\n"
+            "这样走的是引擎自己的扫描引擎，不受权限与自我保护限制。\n"
+            "扫完回到这里点「回填」记录结论。",
+        )
+
     def _trigger_manual(self) -> None:
         """按火绒右键菜单的协议发起扫描。受其自我保护限制，需要管理员权限。"""
         if self._outcome is None:

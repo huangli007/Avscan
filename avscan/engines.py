@@ -452,7 +452,9 @@ ENGINES: tuple[Engine, ...] = (
         display="Malwarebytes",
         vendor="Malwarebytes",
         order=5,
-        tier="auto",
+        # 免费版 CLI 不支持定向扫描（实测），但它的右键菜单「用 Malwarebytes 扫描」可用，
+        # 所以按人工引擎处理，走模拟右键。
+        tier="manual",
         probes=(
             "Malwarebytes/Anti-Malware/MBAMCmd.exe",
             "Malwarebytes/Anti-Malware/mbam.exe",
@@ -465,7 +467,7 @@ ENGINES: tuple[Engine, ...] = (
             "免费版 mbam.exe 不接受指定路径，仅商业版支持命令行定向扫描；",
             "免费版请回退为人工：Scan → Custom Scan 勾选目标目录。",
         ),
-        gui_hint="Scanner → Custom Scan → Configure Scan → 勾选目标目录",
+        gui_hint="右键目标 → 用 Malwarebytes 扫描",
         default_timeout=3600,
     ),
     Engine(

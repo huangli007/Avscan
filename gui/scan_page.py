@@ -80,7 +80,6 @@ class EngineRow(QWidget):
         self.check.setChecked(status.runnable)
         self.check.setEnabled(status.runnable)
         row.addWidget(self.check)
-
         name = QLabel(status.engine.display)
         name.setStyleSheet(f"color:{theme.TEXT}; font-size:13px;")
         row.addWidget(name)
@@ -365,10 +364,13 @@ class ScanPage(QWidget):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        # 说明列文字很长，Stretch 模式下它不收缩，会把操作列整个挤出可视区，
+        # 所以改成固定宽度，给操作列留出位置
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        self.result_table.setColumnWidth(4, 430)
         # 操作列放的是 widget，ResizeToContents 不会计算 widget 宽度，必须显式给宽
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self.result_table.setColumnWidth(5, 158)
+        self.result_table.setColumnWidth(5, 172)
         v.addWidget(self.result_table)
 
         self.result_box.setVisible(False)
@@ -770,28 +772,28 @@ class ScanPage(QWidget):
             self.result_table.setItem(i, 3, QTableWidgetItem(f"{float(r.get('duration_sec') or 0):.1f}s"))
             self.result_table.setItem(i, 4, QTableWidgetItem(message))
 
-            # 仅 GUI 的引擎：优先引导用引擎自己的右键扫描（走 explorer 上下文，
-            # 不受自我保护与提权限制），自动触发只作备选。
+            # 仅 GUI 的引擎：首选「模拟人工右键扫描」——走引擎自己的完整扫描引擎，
+            # 不需要私有协议、不需要管理员（除非引擎自己要求）。
             if r.get("status") == "manual":
                 box = QWidget()
                 bh = QHBoxLayout(box)
                 bh.setContentsMargins(0, 0, 0, 0)
                 bh.setSpacing(4)
 
-                btn_locate = QPushButton("定位")
-                btn_locate.setObjectName("Ghost")
-                btn_locate.setFixedHeight(20)
-                btn_locate.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn_locate.setToolTip("打开目标位置，用引擎自己的右键扫描（推荐）")
-                btn_locate.clicked.connect(lambda _=False: self._locate_target())
-                bh.addWidget(btn_locate)
+                btn_rc = QPushButton("模拟右键")
+                btn_rc.setObjectName("Ghost")
+                btn_rc.setFixedHeight(20)
+                btn_rc.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn_rc.setToolTip("模拟人工在资源管理器里右键扫描（首选）")
+                btn_rc.clicked.connect(lambda _=False, k=r["engine"]: self._simulate_rightclick(k))
+                bh.addWidget(btn_rc)
 
                 if r["engine"] == "huorong":
                     btn_trig = QPushButton("触发")
                     btn_trig.setObjectName("Ghost")
                     btn_trig.setFixedHeight(20)
                     btn_trig.setCursor(Qt.CursorShape.PointingHandCursor)
-                    btn_trig.setToolTip("备选：按火绒协议自动发起扫描（需管理员权限）")
+                    btn_trig.setToolTip("备选：按火绒私有协议发起扫描（需管理员）")
                     btn_trig.clicked.connect(lambda _=False: self._trigger_manual())
                     bh.addWidget(btn_trig)
 
@@ -807,6 +809,66 @@ class ScanPage(QWidget):
                 self.result_table.setCellWidget(i, 5, box)
 
     # ---- 人工回填 ----
+    def _simulate_rightclick(self, engine_key: str) -> None:
+        """模拟人工在资源管理器里右键扫描——首选方式。
+
+        不碰鼠标，只短暂把资源管理器切到前台。
+        """
+        if self._outcome is None:
+            return
+        targets = [
+            str(t.get("path", ""))
+            for t in self._outcome.meta.get("targets", [])
+            if t.get("path")
+        ]
+        if not targets:
+            QMessageBox.information(self, "无目标", "当前运行没有可扫描的目标路径。")
+            return
+
+        from .rightclick import scan_by_rightclick
+
+        QMessageBox.information(
+            self,
+            "即将模拟右键",
+            "程序会打开资源管理器并选中目标，然后自动触发引擎的右键扫描项。\n\n"
+            "这期间请不要操作鼠标键盘，几秒后会自动切回。",
+        )
+
+        ok, msg = scan_by_rightclick(targets, engine_key)
+        if ok:
+            QMessageBox.information(self, "已触发扫描", msg)
+            return
+
+        # 回退：火绒的右键菜单不响应程序化点击（实测菜单里根本没有它那一项），
+        # 改走它的私有协议 HipsMain -S（需管理员权限）。
+        if engine_key == "huorong":
+            from avscan.huorong import PERMISSION_HINT, is_admin, trigger_scan
+
+            if not is_admin():
+                QMessageBox.warning(
+                    self,
+                    "模拟右键对火绒无效",
+                    msg + "\n\n" + PERMISSION_HINT,
+                )
+                return
+
+            ok2, msg2 = trigger_scan(targets)
+            if ok2:
+                QMessageBox.information(
+                    self,
+                    "已通过火绒协议触发",
+                    msg2 + "\n\n（右键菜单方式对火绒无效，已自动改用它的私有协议）",
+                )
+                return
+            QMessageBox.warning(self, "无法自动触发", msg + "\n\n" + msg2)
+            return
+
+        QMessageBox.warning(
+            self,
+            "无法自动触发",
+            msg + "\n\n可在资源管理器里右键目标 → 引擎的扫描项，扫完回来点「回填」。",
+        )
+
     def _locate_target(self) -> None:
         """打开目标位置，让用户用引擎自己的右键扫描——比程序硬拉进程可靠。"""
         if self._outcome is None:
@@ -938,12 +1000,12 @@ class ScanPage(QWidget):
             msgs = entry.get("messages") or []
             if msgs:
                 self.result_table.setItem(i, 4, QTableWidgetItem(str(msgs[-1])))
-            if self.result_table.cellWidget(i, 5) is not None:
+            # 只有状态真的变了才移除按钮——manual 状态下必须保留「触发/回填」入口
+            if new_status != "manual" and self.result_table.cellWidget(i, 5) is not None:
                 self.result_table.removeCellWidget(i, 5)
-                if new_status != "manual":
-                    done = QLabel("已回填")
-                    done.setStyleSheet(f"color:{theme.GREEN}; font-size:11px;")
-                    self.result_table.setCellWidget(i, 5, done)
+                done = QLabel("已回填")
+                done.setStyleSheet(f"color:{theme.GREEN}; font-size:11px;")
+                self.result_table.setCellWidget(i, 5, done)
 
     # ---- 打开产物 ----
     def _open_report(self) -> None:

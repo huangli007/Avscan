@@ -110,7 +110,7 @@ def run_target(
 
     if engine.tier == "manual":
         base.status = MANUAL
-        base.message = f"需人工执行：{engine.gui_hint or '在 GUI 内指定该目录扫描'}"
+        base.message = engine.gui_hint or "在 GUI 内指定该目录扫描"
         return base
 
     if not status.ready or status.exe is None or engine.build is None:

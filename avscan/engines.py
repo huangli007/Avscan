@@ -567,10 +567,13 @@ class EngineStatus:
 
     @property
     def runnable(self) -> bool:
-        # ready=False 的（如 Defender 被禁用、缺命令模板）不该被勾选去跑
+        # 人工引擎（仅 GUI）：装了就该能被选中——它是靠人工/右键扫描来执行的，
+        # 不该被"ready=False"挡掉。
+        if self.engine.tier == "manual":
+            return self.installed
+        # 自动引擎：必须真的能跑（Defender 被禁用、缺命令模板时都不行）
         return (
-            self.engine.tier == "auto"
-            and self.installed
+            self.installed
             and self.exe is not None
             and self.ready
         )

@@ -89,6 +89,47 @@ def file_version(path: Path) -> str | None:
 
 
 # ---- Defender 病毒库 ------------------------------------------------------
+def _service_running(name: str) -> bool:
+    """查 Windows 服务是否在运行。查不到就当作在跑，不误伤。"""
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["sc", "query", name], capture_output=True, text=True, timeout=5
+        )
+        return "RUNNING" in out.stdout.upper()
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _defender_availability() -> tuple[bool, str]:
+    """Defender 现在还能不能扫。
+
+    装了第三方杀软（火绒等）后 Defender 常被禁用：注册表 DisableAntiSpyware=1，
+    WinDefend 服务停止。此时 MpCmdRun 会以 0x80004005 失败，
+    必须提前识别出来，否则每次白跑一趟还只报「扫描出错」。
+    """
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows Defender",
+            0,
+            winreg.KEY_READ | 0x0100,  # KEY_WOW64_64KEY
+        ) as key:
+            disabled, _ = winreg.QueryValueEx(key, "DisableAntiSpyware")
+            if int(disabled) == 1:
+                return False, "Defender 已被禁用（安装第三方杀软后常见），无法执行扫描"
+    except (ImportError, OSError, ValueError):
+        pass
+
+    if not _service_running("WinDefend"):
+        return False, "WinDefend 服务未运行，Defender 不可用"
+
+    return True, ""
+
+
 def _defender_db() -> tuple[str | None, str | None]:
     """从注册表读 Defender 的引擎版本 / 病毒库版本 / 病毒库日期。"""
     try:
@@ -168,6 +209,8 @@ def _parse_defender(stdout: str, stderr: str, rc: int | None, outdir: Path):
         # 把扫描失败报成「发现病毒」是最不能接受的假阳性。
         if detections:
             return INFECTED, detections, f"检出 {len(detections)} 项"
+        if re.search(r"Product/Feature\s+disabled", text, re.I):
+            return ERROR, [], "Defender 功能已被禁用（通常因安装第三方杀软），无法扫描"
         if re.search(r"\[Failed\]|CmdTool:\s*Failed|0x[0-9A-Fa-f]{8}", text):
             return ERROR, [], "扫描出错（退出码 2），详见原始输出"
         return ERROR, [], "退出码 2 但未解析到威胁，按未完成处理"
@@ -228,8 +271,17 @@ def _parse_avast(stdout: str, stderr: str, rc: int | None, outdir: Path):
 
 
 def _parse_stinger(stdout: str, stderr: str, rc: int | None, outdir: Path):
-    report = _read_report(outdir / "stinger.report.txt")
-    text = _text_of(_text_of(stdout, stderr), report)
+    chunks = [_text_of(stdout, stderr)]
+    # Stinger 把报告写到 -log 指定的目录，扩展名不固定（.log / .csv / .txt）
+    for pattern in ("*.log", "*.csv", "*.txt"):
+        for p in sorted(outdir.glob(pattern)):
+            if p.name.startswith(("stdout", "stderr")):
+                continue
+            try:
+                chunks.append(p.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+    text = "\n".join(chunks)
 
     # 先排除阴性行：'No infected objects found' 里也含 infected，直接匹配会误报检出
     negative = re.compile(r"\b(?:no|0|zero|not)\s+(?:virus|viruses|threat|threats|infected|malware)", re.I)
@@ -245,9 +297,9 @@ def _parse_stinger(stdout: str, stderr: str, rc: int | None, outdir: Path):
         return INFECTED, detections, f"检出 {len(detections)} 行"
     if negative.search(text) or re.search(r"\bclean\b", text, re.I):
         return CLEAN, [], "输出显示无检出"
-    if rc == 0 and report.strip():
+    if rc == 0 and text.strip():
         return CLEAN, [], "报告存在且无感染记录"
-    return UNKNOWN, [], f"退出码 {rc}，报告不可读"
+    return UNKNOWN, [], f"退出码 {rc}，未找到可读的扫描报告（Stinger 参数随版本而异，可回退人工扫描）"
 
 
 def _parse_mbam(stdout: str, stderr: str, rc: int | None, outdir: Path):
@@ -293,8 +345,9 @@ def _build_avast(exe: Path, target: Path, outdir: Path) -> list[str]:
 
 
 def _build_stinger(exe: Path, target: Path, outdir: Path) -> list[str]:
-    report = outdir / "stinger.report.txt"
-    return [str(exe), f"/SCAN={target}", f"/REPORT={report}", "/SILENT", "/GO"]
+    # Stinger 是 GUI 程序：-scan 触发扫描，-sfx 静默不弹窗，-log 指定报告目录。
+    # 早先用的 /SCAN= /REPORT= /SILENT /GO 不是 McAfee 的真实参数，Stinger 会直接退出码 6。
+    return [str(exe), "-scan", "-sfx", "-log", str(outdir), str(target)]
 
 
 def _build_mbam(exe: Path, target: Path, outdir: Path) -> list[str]:
@@ -324,6 +377,7 @@ class Engine:
     parse: ParseFn | None = None
     pick: PickFn | None = None
     db: Callable[[], tuple[str | None, str | None]] | None = None
+    availability: Callable[[], tuple[bool, str]] | None = None
     caveats: tuple[str, ...] = ()
     default_timeout: int = 1800
     gui_hint: str = ""
@@ -483,6 +537,7 @@ ENGINES: tuple[Engine, ...] = (
         parse=_parse_defender,
         pick=_pick_newest_defender,
         db=_defender_db,
+        availability=_defender_availability,
         caveats=(
             "安装第三方杀软后 Defender 会进入被动模式，实时防护关闭，但按需扫描仍可用。",
         ),
@@ -512,7 +567,13 @@ class EngineStatus:
 
     @property
     def runnable(self) -> bool:
-        return self.engine.tier == "auto" and self.installed and self.exe is not None
+        # ready=False 的（如 Defender 被禁用、缺命令模板）不该被勾选去跑
+        return (
+            self.engine.tier == "auto"
+            and self.installed
+            and self.exe is not None
+            and self.ready
+        )
 
 
 def _candidates(engine: Engine, roots: list[Path], reg_dirs: list[Path]) -> list[Path]:
@@ -607,6 +668,22 @@ def probe_engine(engine: Engine, roots: list[Path], reg_dirs: list[Path]) -> Eng
             ready=False,
             reason="缺少命令模板",
         )
+
+    # 环境性不可用：装了第三方杀软、策略禁用、服务停掉等。
+    # 这类情况要提前说清楚，别白跑一趟再报"扫描出错"。
+    if engine.availability is not None:
+        ok, why = engine.availability()
+        if not ok:
+            return EngineStatus(
+                engine=engine,
+                installed=True,
+                exe=exe,
+                version=version,
+                db_version=db_version,
+                db_date=db_date,
+                ready=False,
+                reason=why,
+            )
 
     return EngineStatus(
         engine=engine,

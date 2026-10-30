@@ -78,7 +78,7 @@ class EngineRow(QWidget):
 
         self.check = QCheckBox()
         self.check.setChecked(status.runnable)
-        self.check.setEnabled(status.runnable or status.installed)
+        self.check.setEnabled(status.runnable)
         row.addWidget(self.check)
 
         name = QLabel(status.engine.display)

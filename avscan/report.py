@@ -115,7 +115,22 @@ def _md_escape(text: str) -> str:
     return str(text).replace("|", "\\|").replace("\n", " ")
 
 
-def render_markdown(meta: dict, agg: OrderedDict) -> str:
+def mark_missing_evidence(agg: OrderedDict, shots_dir: Path) -> OrderedDict:
+    """「无毒」必须有截图证据。
+
+    只有结论没有截图，等于没扫——这类引擎不能按无毒计，
+    降级为「未取得结论」，总评随之从通过掉到未完成。
+    """
+    for key, v in agg.items():
+        if v["status"] != CLEAN:
+            continue
+        if not (shots_dir / f"{key}.png").is_file():
+            v["status"] = UNKNOWN
+            v["messages"].append("结论为「无毒」但缺少截图证据")
+    return agg
+
+
+def render_markdown(meta: dict, agg: OrderedDict, run_dir: Path | None = None) -> str:
     verdict, verdict_text = verdict_of(agg)
     verdict_label = {
         "pass": "通过",
@@ -128,6 +143,7 @@ def render_markdown(meta: dict, agg: OrderedDict) -> str:
 
     total_files = sum(t.get("file_count", 0) for t in meta.get("targets", []))
     total_bytes = sum(t.get("total_bytes", 0) for t in meta.get("targets", []))
+    shots_dir = Path(run_dir) / "screenshots" if run_dir is not None else None
 
     lines: list[str] = []
     lines.append("# 多引擎批量扫毒报告")
@@ -188,6 +204,24 @@ def render_markdown(meta: dict, agg: OrderedDict) -> str:
         )
     lines.append("")
 
+    if shots_dir is not None and shots_dir.is_dir():
+        shots = sorted(shots_dir.glob("*.png"))
+        if shots:
+            lines.append("## 扫描结果截图")
+            lines.append("")
+            for shot in shots:
+                key = shot.stem
+                if key == "overview":
+                    lines.append("### 结果总览")
+                    lines.append("")
+                    lines.append(f"![扫描结果总览](screenshots/{shot.name})")
+                else:
+                    disp = agg.get(key, {}).get("display", key)
+                    lines.append(f"### {disp}")
+                    lines.append("")
+                    lines.append(f"![{disp} 扫描结果](screenshots/{shot.name})")
+                lines.append("")
+
     infected = {k: v for k, v in agg.items() if v["status"] == INFECTED}
     if infected:
         lines.append("## 检出明细")
@@ -226,12 +260,19 @@ def render_markdown(meta: dict, agg: OrderedDict) -> str:
 
     lines.append("## 证据清单")
     lines.append("")
-    lines.append("| 引擎 | 退出码 | 原始输出 |")
-    lines.append("|---|---|---|")
-    for v in agg.values():
+    lines.append("| 引擎 | 退出码 | 截图 | 原始输出 |")
+    lines.append("|---|---|---|---|")
+    shots_dir = Path(run_dir) / "screenshots" if run_dir is not None else None
+    for key, v in agg.items():
         codes = ",".join("-" if c is None else str(c) for c in v["exit_codes"])
         logs = "<br>".join(f"`{Path(p).name}`" for p in v["logs"]) or "-"
-        lines.append(f"| {_md_escape(v['display'])} | {codes} | {logs} |")
+        if shots_dir is not None and (shots_dir / f"{key}.png").is_file():
+            shot = f"[截图](screenshots/{key}.png)"
+        else:
+            shot = "**缺失**" if v["status"] == CLEAN else "-"
+        lines.append(
+            f"| {_md_escape(v['display'])} | {codes} | {shot} | {logs} |"
+        )
     lines.append("")
     lines.append(f"> 原始文件位于运行目录下的 `raw/` 子目录。")
     lines.append("")
@@ -385,7 +426,12 @@ def publish_reports(run_dir: Path, meta: dict, results: list[dict]) -> tuple[str
     agg = aggregate(results)
     agg = apply_manual_results(agg, load_manual_results(run_dir))
 
-    (run_dir / "report.md").write_text(render_markdown(meta, agg), encoding="utf-8")
+    # 有截图目录 = 打算用截图作证据，此时严格执行「无毒必须有截图」
+    shots_dir = run_dir / "screenshots"
+    if shots_dir.is_dir():
+        agg = mark_missing_evidence(agg, shots_dir)
+
+    (run_dir / "report.md").write_text(render_markdown(meta, agg, run_dir), encoding="utf-8")
     (run_dir / "report.csv").write_text(render_csv(meta, agg), encoding="utf-8")
     (run_dir / "report.json").write_text(render_json(meta, agg, results), encoding="utf-8")
     (run_dir / "manual-checklist.md").write_text(render_checklist(meta, agg), encoding="utf-8")

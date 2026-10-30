@@ -39,6 +39,7 @@ from avscan.report import (
     aggregate,
     apply_manual_results,
     load_manual_results,
+    mark_missing_evidence,
     publish_reports,
     verdict_of,
 )
@@ -47,6 +48,7 @@ from avscan.targets import count_risk_files, human_bytes, walk_stats
 from avscan.userconfig import set_override
 
 from . import theme
+from .evidence import render_output_png
 from .manual_dialog import ManualResultDialog
 from .widgets import Badge, DropZone, HLine, Section, muted, tiny
 from .worker import ProbeWorker, ScanWorker
@@ -668,6 +670,65 @@ class ScanPage(QWidget):
         self.result_box.setVisible(True)
         # 结果在页面下方，扫完自动滚过去，避免用户以为没反应
         QTimer.singleShot(80, self._scroll_to_result)
+        # 证据截图：引擎原始输出渲染成图 + 结果总览，报告里直接引用
+        QTimer.singleShot(300, self._capture_evidence)
+
+    def _capture_evidence(self) -> None:
+        """为每个引擎生成证据截图，并让报告引用它们。
+
+        「无毒」结论必须有截图，缺证据的引擎会被降级为未取得结论。
+        """
+        if self._outcome is None:
+            return
+
+        run_dir = self._outcome.run_dir
+        shots = run_dir / "screenshots"
+        try:
+            shots.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+
+        grouped: dict[str, dict] = {}
+        for r in self._outcome.results:
+            grouped.setdefault(r["engine"], r)
+
+        for key, r in grouped.items():
+            target = shots / f"{key}.png"
+            if target.is_file():
+                continue  # 用户已手动放入界面截图，不覆盖
+
+            body = ""
+            # 原始 results 没有 logs 键（那是聚合后的），要用 stdout_path
+            paths = list(r.get("logs") or [])
+            if not paths and r.get("stdout_path"):
+                paths = [r["stdout_path"]]
+            for path in paths:
+                p = Path(path)
+                if p.is_file():
+                    body += p.read_text(encoding="utf-8", errors="replace") + "\n"
+            if not body.strip():
+                body = str(r.get("message", ""))
+
+            code = r.get("exit_code")
+            render_output_png(
+                str(r.get("display", key)),
+                body,
+                target,
+                subtitle=f"退出码 {code}" if code is not None else "",
+            )
+
+        # 结果总览
+        try:
+            self.result_box.grab().save(str(shots / "overview.png"), "PNG")
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 报告重生成：引用截图 + 执行证据完整性检查
+        try:
+            publish_reports(run_dir, self._outcome.meta, self._outcome.results)
+        except Exception:  # noqa: BLE001
+            pass
+        self._refresh_after_manual()
 
     def _scroll_to_result(self) -> None:
         if hasattr(self, "_scroll") and self.result_box.isVisible():
@@ -848,6 +909,10 @@ class ScanPage(QWidget):
             return
         run_dir = self._outcome.run_dir
         agg = apply_manual_results(aggregate(self._outcome.results), load_manual_results(run_dir))
+        # 与报告同口径：缺截图证据的「无毒」要降级
+        shots_dir = run_dir / "screenshots"
+        if shots_dir.is_dir():
+            agg = mark_missing_evidence(agg, shots_dir)
         verdict, _ = verdict_of(agg)
 
         kind, label = VERDICT_KIND.get(verdict, ("gray", verdict))
